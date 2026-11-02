@@ -26,9 +26,16 @@ Created by Kamyar Fatemifar.
   about it. Each batch folder gets a `library.csv` with one row per gallery (date, site, title,
   name, tags, address, folder, number of pictures); downloading the same address again updates
   its row.
-- **Any website.** gallery-dl knows a long list of sites. For a site it does not know, Kollect
-  tries again with gallery-dl's generic extractor, which takes every picture on the page (the
-  rows say "whole-page grab"). This also picks up the page's own logos and buttons.
+- **Any website, full size or everything.** gallery-dl knows a long list of sites and takes their
+  full-size pictures. For a site it does not know, each batch has a choice:
+  - **Full size** (the default): only the large picture each thumbnail opens, at the largest size
+    the page offers. Kollect reads the page, follows each thumbnail's link (lightbox galleries
+    often list several sizes there, and the largest is taken), leaves out logos, icons and links
+    to other galleries, and hands gallery-dl that list in page order. When the thumbnails open a
+    page per photo instead, Kollect visits those pages and takes each one's main picture; when
+    they open pages on an image host, gallery-dl handles those pages.
+  - **Everything**: every picture on the page, with gallery-dl's generic extractor. This also
+    takes the thumbnails, every size the page offers, and the page's own logos and buttons.
 - **Start times.** A batch can wait for a time of day. If Kollect is closed at that time, a
   systemd user timer opens it and the batch starts.
 - **Paper-simple.** One window. A link already on the clipboard is filled in when you switch to
@@ -61,8 +68,9 @@ removes the program and leaves your downloads, the queue and the settings in pla
 
 1. Paste one or more gallery links into the box, one per line.
 2. *Save in* is the folder for this batch. Type a path or press the folder button.
-3. Turn *Number files* on to name the pictures 001, 002, 003... in page order.
-4. Press **Add and start** (or Ctrl+Enter in the links box). The arrow next to it adds the batch
+3. Choose **Full size** or **Everything** (this matters only for sites gallery-dl does not know).
+4. Turn *Number files* on to name the pictures 001, 002, 003... in page order.
+5. Press **Add and start** (or Ctrl+Enter in the links box). The arrow next to it adds the batch
    paused, or with a start time.
 
 Each batch shows its folder, how many links are done, and four buttons: Start/Pause, the clock
@@ -93,10 +101,15 @@ were renamed to numbers. To download a gallery again from scratch, delete its fo
 Numbers follow the position on the page. When a site lists the same picture twice, the copy is
 skipped and its number stays unused, so a number can be missing.
 
+Full size works with pages that put the large picture's address in the page itself, which is how
+most lightbox and photo-page galleries are built. It cannot see pictures that a page loads only
+with JavaScript after it opens, and gallery-dl downloads a listed picture only when its address
+ends in a picture type such as `.jpg`, `.png` or `.webp`. In those cases try Everything.
+
 ## Settings
 
-`~/.config/kollect/settings.json` holds the last folder and numbering choice, and two keys you can
-edit while Kollect is closed:
+`~/.config/kollect/settings.json` holds the last folder, Full size/Everything and numbering choices,
+and two keys you can edit while Kollect is closed:
 
 - `extra_args`: more gallery-dl options for every download. For sites that need you signed in,
   `["--cookies-from-browser", "firefox"]` uses the cookies of your Firefox profile (see
@@ -112,7 +125,8 @@ The queue is in `~/.local/state/kollect/queue.json`, and gallery-dl's output is 
 python3 tests/test_core.py
 ```
 
-checks folder names, numbering, metadata, the library file, start times and the saved queue.
+checks folder names, numbering, metadata, the library file, start times, the saved queue and the
+full-size picture finder.
 `tests/atspi_drive.py` drives a running Kollect window through the accessibility bus, and
 `tests/site/` has a small local test website with pictures in a known page order; its server file
 explains how gallery-dl is pointed at it.

@@ -106,10 +106,20 @@ class Window(Adw.ApplicationWindow):
         folder_row.append(self.folder)
         folder_row.append(icon_button("folder-open-symbolic", "Choose folder", self.choose_folder))
 
-        # numbering and the add button
+        # what to take, numbering and the add button
+        self.full = Gtk.ToggleButton(label="Full size", active=self.settings.get("mode") != "all",
+                                     tooltip_text="Only the large picture each thumbnail opens, at the largest "
+                                                  "size the page offers")
+        self.everything = Gtk.ToggleButton(label="Everything", group=self.full,
+                                           active=self.settings.get("mode") == "all",
+                                           tooltip_text="Every picture on the page, also thumbnails, logos and icons")
+        take = Gtk.Box(valign=Gtk.Align.CENTER)
+        take.add_css_class("linked")
+        take.append(self.full)
+        take.append(self.everything)
         self.number = Gtk.Switch(active=bool(self.settings["numbered"]), valign=Gtk.Align.CENTER)
         a11y(self.number, "Number files")
-        number_label = Gtk.Label(label="Number files 001, 002, 003… in page order", xalign=0, hexpand=True)
+        number_label = Gtk.Label(label="Number files 001, 002… in page order", xalign=0, hexpand=True)
         self.add_time = TimePicker()
         add_later = Gtk.Button(label="Add paused")
         add_later.add_css_class("flat")
@@ -126,6 +136,7 @@ class Window(Adw.ApplicationWindow):
         add_later.connect("clicked", lambda *_: self.add("paused"))
         add_at.connect("clicked", lambda *_: self.add("at", self.add_time.timestamp()))
         options_row = Gtk.Box(spacing=10)
+        options_row.append(take)
         options_row.append(self.number)
         options_row.append(number_label)
         options_row.append(self.add_button)
@@ -195,9 +206,11 @@ class Window(Adw.ApplicationWindow):
             return
         self.folder.set_text(core.shorten(base))
         self.settings["base"] = core.shorten(base)
+        mode = "all" if self.everything.get_active() else "full"
         self.settings["numbered"] = self.number.get_active()
+        self.settings["mode"] = mode
         self.settings.save()
-        self.ctl.add_batch(fresh, base, self.number.get_active(), start, start_at)
+        self.ctl.add_batch(fresh, base, self.number.get_active(), mode, start, start_at)
         buf.set_text("")
         msg = "Added " + plural(len(fresh), "link")
         if len(fresh) < len(links):
@@ -315,6 +328,7 @@ class Window(Adw.ApplicationWindow):
             parts.append(f"{done} done")
         if failed:
             parts.append(f"{failed} failed")
+        parts.append("everything" if b.get("mode", "all") == "all" else "full size")
         if b["numbered"]:
             parts.append("numbered")
         if running:
@@ -366,7 +380,7 @@ class Window(Adw.ApplicationWindow):
                 text += f", {link['old']} already here"
             if link["failed"]:
                 text += f", {link['failed']} failed"
-            return text + (" · whole-page grab" if link["generic"] else "")
+            return text + {"generic": " · everything on the page", "fullsize": " · full size"}.get(link.get("how"), "")
         if status == "done":
             return "Done: " + note
         if status == "failed":
@@ -474,7 +488,7 @@ class App(Adw.Application):
         fresh = [u for u in links if u not in self.ctl.store.queued_urls()]
         if fresh:
             base = core.expand(self.settings["base"]) or core.expand(core.DEFAULT_BASE)
-            self.ctl.add_batch(fresh, base, bool(self.settings["numbered"]))
+            self.ctl.add_batch(fresh, base, bool(self.settings["numbered"]), self.settings.get("mode", "full"))
         if "--start-due" in args:
             self.ctl.start_due()
         return 0

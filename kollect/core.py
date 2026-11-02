@@ -115,16 +115,47 @@ def find_gallery_dl(settings=None):
     return None
 
 
-def gallery_dl_args(gallery_dl, folder, link, generic, extra_args=()):
+def gallery_dl_args(gallery_dl, folder, link, stage, extra_args=()):
     """gallery-dl saves into <folder>/.kollect/incoming and Kollect moves each file out as soon as it is reported.
     skip=enumerate: a same-named file is saved as name.1.ext instead of being skipped because the incoming folder
-    still held its namesake; the download archive alone decides what was downloaded before."""
+    still held its namesake; the download archive alone decides what was downloaded before.
+
+    stage "site": gallery-dl's own extractor for the site; "generic": every picture on the page;
+    "fullsize": the list of full-size pictures that finder.py found (one direct link per line)."""
     work = os.path.join(folder, WORK_DIR)
+    args = [gallery_dl, "-D", os.path.join(work, "incoming"),
+            "--download-archive", os.path.join(work, "archive.sqlite3"), "-o", "skip=enumerate"]
+    if stage == "fullsize":
+        return args + ["-o", "extractor.directlink.filename={filename}.{extension}", *extra_args,
+                       "-i", os.path.join(work, "full-size.txt")]
     _, url = split_prefix(link)
-    return [gallery_dl, "-D", os.path.join(work, "incoming"),
-            "--download-archive", os.path.join(work, "archive.sqlite3"),
-            "--write-info-json", "-o", "skip=enumerate", *extra_args,
-            ("generic:" + url) if generic else url]
+    return args + ["--write-info-json", *extra_args, ("generic:" + url) if stage == "generic" else url]
+
+
+def finder_args(folder, link):
+    return [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "finder.py"),
+            split_prefix(link)[1], os.path.join(folder, WORK_DIR, "found.json")]
+
+
+def take_found(folder):
+    """Read and remove the finder's result; write the picture list gallery-dl reads. Returns the result or None."""
+    path = os.path.join(folder, WORK_DIR, "found.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            found = json.load(f)
+        os.remove(path)
+    except (OSError, ValueError):
+        return None
+    with open(os.path.join(folder, WORK_DIR, "full-size.txt"), "w", encoding="utf-8") as f:
+        f.write("".join(u + "\n" for u in found.get("pictures", [])))
+    return found
+
+
+def drop_list(folder):
+    try:
+        os.remove(os.path.join(folder, WORK_DIR, "full-size.txt"))
+    except OSError:
+        pass
 
 
 def parse_line(line):
@@ -277,7 +308,11 @@ def pick_meta(meta):
     return title, name, tags
 
 
-def write_gallery_info(folder, link, meta, files, numbered, generic):
+PICKED = {"site": "gallery-dl's extractor for this site", "generic": "everything on the page",
+          "fullsize": "full-size pictures from the page"}
+
+
+def write_gallery_info(folder, link, meta, files, numbered, stage):
     title, name, tags = pick_meta(meta)
     info = {
         "url": split_prefix(link)[1],
@@ -289,7 +324,7 @@ def write_gallery_info(folder, link, meta, files, numbered, generic):
         "downloaded": time.strftime("%Y-%m-%d %H:%M:%S"),
         "images": len(files),
         "numbered": numbered,
-        "whole_page_grab": generic,
+        "picked": PICKED.get(stage, stage),
         "files": files,
         "metadata": meta,
     }
@@ -371,15 +406,16 @@ def new_id():
     return uuid.uuid4().hex[:8]
 
 
-def new_batch(links, base, numbered):
-    return {"id": new_id(), "base": base, "numbered": bool(numbered), "state": "active", "start_at": None,
-            "added": time.time(),
+def new_batch(links, base, numbered, mode="full"):
+    """mode "full": full-size pictures only; "all": everything on the page (for sites gallery-dl does not know)."""
+    return {"id": new_id(), "base": base, "numbered": bool(numbered), "mode": mode, "state": "active",
+            "start_at": None, "added": time.time(),
             "links": [{"id": new_id(), "url": u, "status": "waiting", "note": "", "title": "", "folder": "",
                        "new": 0, "old": 0, "failed": 0, "generic": split_prefix(u)[0]} for u in links]}
 
 
 class Settings(dict):
-    DEFAULTS = {"base": DEFAULT_BASE, "numbered": False, "extra_args": [], "gallery_dl": ""}
+    DEFAULTS = {"base": DEFAULT_BASE, "numbered": False, "mode": "full", "extra_args": [], "gallery_dl": ""}
 
     def __init__(self, path=None):
         super().__init__(self.DEFAULTS)

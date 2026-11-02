@@ -15,9 +15,15 @@ from . import core
 LOG_LIMIT = 1_000_000
 
 
+STAGE_NOTES = {"site": "", "generic": "Taking every picture on the page", "find": "Looking for the full-size pictures…",
+               "fullsize": "Downloading the full-size pictures…"}
+STAGE_DONE = {"generic": " · everything on the page", "fullsize": " · full size from the page"}
+
+
 class Run:
-    def __init__(self, batch, link, folder, generic):
-        self.batch, self.link, self.folder, self.generic = batch, link, folder, generic
+    def __init__(self, batch, link, folder, stage):
+        self.batch, self.link, self.folder, self.stage = batch, link, folder, stage
+        self.found = None
         self.proc = None
         self.index = 0
         self.files = []
@@ -47,8 +53,8 @@ class Controller:
 
     # ------------------------------------------------------------ commands
 
-    def add_batch(self, links, base, numbered, start="now", start_at=None):
-        b = core.new_batch(links, base, numbered)
+    def add_batch(self, links, base, numbered, mode="full", start="now", start_at=None):
+        b = core.new_batch(links, base, numbered, mode)
         if start == "paused":
             b["state"] = "paused"
         elif start == "at":
@@ -167,22 +173,28 @@ class Controller:
         else:
             self.notify()
 
-    def _start(self, batch, link, generic=None):
-        generic = link.get("generic", False) if generic is None else generic
+    def _start(self, batch, link, stage="site", found=None):
+        """stage "site": gallery-dl's own extractor. For a site it does not know, "find" (finder.py reads the
+        page) then "fullsize" (gallery-dl downloads that list) in full-size mode, or "generic" in everything mode."""
+        if stage == "site" and core.split_prefix(link["url"])[0]:
+            stage = "generic"  # the link itself asks for every picture on the page
         gallery_dl = core.find_gallery_dl(self.settings)
         base = core.expand(batch["base"]) or core.expand(core.DEFAULT_BASE)
         folder = core.gallery_folder(base, link["url"])
-        link.update(status="running", folder=folder, generic=generic, new=0, old=0, failed=0,
-                    note="Taking every image on the page" if generic else "")
-        if not gallery_dl:
+        link.update(status="running", folder=folder, how=stage, new=0, old=0, failed=0, note=STAGE_NOTES[stage])
+        if stage != "find" and not gallery_dl:
             return self._fail(link, "gallery-dl is not installed. Run: pipx install gallery-dl")
         try:
             os.makedirs(os.path.join(folder, core.WORK_DIR, "incoming"), exist_ok=True)
         except OSError as e:
             return self._fail(link, f"Cannot make the folder: {e.strerror}")
-        run = self.run = Run(batch, link, folder, generic)
-        args = core.gallery_dl_args(gallery_dl, folder, link["url"], generic, self.settings.get("extra_args") or [])
-        self._log(f"=== start {link['url']} -> {folder}\n    {' '.join(args)}")
+        run = self.run = Run(batch, link, folder, stage)
+        run.found = found
+        if stage == "find":
+            args = core.finder_args(folder, link["url"])
+        else:
+            args = core.gallery_dl_args(gallery_dl, folder, link["url"], stage, self.settings.get("extra_args") or [])
+        self._log(f"=== start {stage} {link['url']} -> {folder}\n    {' '.join(args)}")
         launcher = Gio.SubprocessLauncher.new(Gio.SubprocessFlags.STDOUT_PIPE | Gio.SubprocessFlags.STDERR_MERGE)
         launcher.setenv("PYTHONUNBUFFERED", "1", True)
         launcher.setenv("PYTHONIOENCODING", "utf-8", True)
@@ -190,7 +202,7 @@ class Controller:
             run.proc = launcher.spawnv(args)
         except GLib.Error as e:
             self.run = None
-            return self._fail(link, f"gallery-dl did not start: {e.message}")
+            return self._fail(link, f"{os.path.basename(args[0])} did not start: {e.message}")
         stream = Gio.DataInputStream.new(run.proc.get_stdout_pipe())
         stream.read_line_async(GLib.PRIORITY_DEFAULT, None, self._on_line, run)
         self._changed()
@@ -216,8 +228,18 @@ class Controller:
             run.proc.wait_async(None, self._on_exit, run)
             return
         self._log(line)
-        kind, text = core.parse_line(line)
         link = run.link
+        if run.stage == "find":
+            word, _, rest = line.partition(" ")
+            if word == "progress":
+                done, _, total = rest.partition(" ")
+                link["note"] = f"Looking for the full-size pictures… photo page {done} of {total}"
+                self.notify(run.batch["id"], link["id"])
+            elif word == "error":
+                run.errors.append(rest)
+            stream.read_line_async(GLib.PRIORITY_DEFAULT, None, self._on_line, run)
+            return
+        kind, text = core.parse_line(line)
         if kind in ("new", "old"):
             run.index += 1
             try:
@@ -266,36 +288,54 @@ class Controller:
                 self._next()
             return
 
+        base = core.expand(b["base"]) or core.expand(core.DEFAULT_BASE)
+        if not os.path.isdir(run.folder):
+            return self._finish(link, "failed", "The gallery folder was deleted while downloading")
+        if run.stage == "find":
+            found = core.take_found(run.folder) if code == 0 else None
+            if found and found.get("pictures"):
+                self._log(f"=== {len(found['pictures'])} full-size pictures found ({found.get('how')})")
+                self._start(b, link, "fullsize", found)
+                return
+            core.tidy(run.folder, base)
+            return self._finish(link, "failed", run.errors[0] if run.errors else
+                                "No full-size gallery pictures found on this page. "
+                                "Add it again with Everything to take every picture on it.")
+
         total = link["new"] + link["old"]
         unknown = code >= 0 and code & 64 or any("Unsupported URL" in e or "No suitable extractor" in e
                                                   for e in run.errors)
-        if total == 0 and unknown and not run.generic:
-            self._log("=== site not supported by gallery-dl: retrying with generic:")
-            self._start(b, link, generic=True)
+        if total == 0 and unknown and run.stage == "site":
+            full = b.get("mode", "all") == "full"
+            self._log("=== site not supported by gallery-dl: " +
+                      ("looking for the full-size pictures" if full else "retrying with generic:"))
+            self._start(b, link, "find" if full else "generic")
             return
 
-        base = core.expand(b["base"]) or core.expand(core.DEFAULT_BASE)
-        meta = core.take_info_json(run.folder)
-        core.tidy(run.folder, base)
-        if total:
-            try:
-                info = core.write_gallery_info(run.folder, link["url"], meta, run.files, b["numbered"], run.generic)
-                core.update_library(base, info)
-                link["title"] = info["title"]
-                extra = ""
-            except OSError as e:
-                extra = f" (info file not saved: {e.strerror})"
-            note = f"{total} image{'s' if total != 1 else ''}"
-            if link["old"]:
-                note += f", {link['new']} new"
-            if link["failed"]:
-                note += f", {link['failed']} failed"
-            if run.generic:
-                note += " · whole-page grab"
-            link["status"], link["note"] = "done", note + extra
+        if run.stage == "fullsize":
+            meta = {k: v for k, v in (run.found or {}).items() if k != "pictures"}
+            core.drop_list(run.folder)
         else:
-            link["status"], link["note"] = "failed", self._why_nothing(code, run)
-        link["finished"] = time.time()
+            meta = core.take_info_json(run.folder)
+        core.tidy(run.folder, base)
+        if not total:
+            return self._finish(link, "failed", self._why_nothing(code, run))
+        extra = ""
+        try:
+            info = core.write_gallery_info(run.folder, link["url"], meta, run.files, b["numbered"], run.stage)
+            core.update_library(base, info)
+            link["title"] = info["title"]
+        except OSError as e:
+            extra = f" (info file not saved: {e.strerror})"
+        note = f"{total} image{'s' if total != 1 else ''}"
+        if link["old"]:
+            note += f", {link['new']} new"
+        if link["failed"]:
+            note += f", {link['failed']} failed"
+        self._finish(link, "done", note + STAGE_DONE.get(run.stage, "") + extra)
+
+    def _finish(self, link, status, note):
+        link["status"], link["note"], link["finished"] = status, note, time.time()
         self._changed()
         self._next()
 
@@ -307,9 +347,9 @@ class Controller:
     @staticmethod
     def _why_nothing(code, run):
         text = " ".join(run.errors).lower()
-        if run.generic and not run.errors:
-            return "No images found on this page"
-        if run.generic and ("unsupported url" in text or "no suitable extractor" in text):
+        if "readonly database" in text:
+            return "The gallery folder was deleted while downloading"
+        if run.stage == "generic" and (not run.errors or "unsupported url" in text or "no suitable extractor" in text):
             return "No images found on this page"
         if code > 0 and code & 16 or any(w in text for w in ("login", "cookies", " 401", " 403", "authoriz")):
             return "This site wants you signed in (see README: cookies)"

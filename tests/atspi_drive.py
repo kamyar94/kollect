@@ -2,7 +2,8 @@
 
   python3 tests/atspi_drive.py dump                       print the window's accessible tree
   python3 tests/atspi_drive.py show                       status line, batches and links as the window shows them
-  python3 tests/atspi_drive.py add --folder DIR [--numbered on|off] [--mode now|paused|at] [--at HH:MM] LINK...
+  python3 tests/atspi_drive.py add --folder DIR [--take full|everything] [--numbered on|off]
+                                   [--mode now|paused|at] [--at HH:MM] LINK...
   python3 tests/atspi_drive.py press NAME [INDEX]          press the INDEX-th (0-based) button called NAME
   python3 tests/atspi_drive.py schedule INDEX HH:MM        give batch INDEX a start time
 """
@@ -58,6 +59,11 @@ def nodes(role=None, name=None, showing=True):
             continue
         out.append(n)
     return out
+
+
+def is_on(n):
+    states = n.get_state_set()
+    return states.contains(Atspi.StateType.CHECKED) or states.contains(Atspi.StateType.PRESSED)
 
 
 def text_of(n):
@@ -119,14 +125,18 @@ def cmd_add(args):
     set_text(entry, args.folder)
     links = nodes((Atspi.Role.TEXT, Atspi.Role.ENTRY), "Links")[0]
     set_text(links, "\n".join(args.links) + "\n")
+    take = nodes(name={"full": "Full size", "everything": "Everything"}[args.take])[0]
+    if not is_on(take):
+        activate(take)
+        time.sleep(0.3)
     switch = nodes(name="Number files")[0]
     want = args.numbered == "on"
-    if switch.get_state_set().contains(Atspi.StateType.CHECKED) != want:
+    if is_on(switch) != want:
         Atspi.Action.do_action(switch, 0)
         time.sleep(0.3)
     print("links box:", text_of(links).strip().replace("\n", " | "))
-    print("save in:", text_of(entry), "| numbered:", nodes(name="Number files")[0].get_state_set().contains(
-        Atspi.StateType.CHECKED))
+    print("save in:", text_of(entry), "| full size:", is_on(nodes(name="Full size")[0]),
+          "| numbered:", is_on(nodes(name="Number files")[0]))
     if args.mode == "now":
         press("Add and start")
         return
@@ -165,6 +175,7 @@ def main():
     a = sub.add_parser("add")
     a.add_argument("--folder", required=True)
     a.add_argument("--numbered", choices=("on", "off"), default="off")
+    a.add_argument("--take", choices=("full", "everything"), default="full")
     a.add_argument("--mode", choices=("now", "paused", "at"), default="now")
     a.add_argument("--at", default="")
     a.add_argument("links", nargs="+")

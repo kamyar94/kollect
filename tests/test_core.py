@@ -8,7 +8,7 @@ import time
 import unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from kollect import core  # noqa: E402
+from kollect import core, finder  # noqa: E402
 
 
 class Links(unittest.TestCase):
@@ -123,7 +123,7 @@ class Library(unittest.TestCase):
             files = [{"n": 1, "file": "001.png", "original": "z.png"}]
             for title in ("First", "Second"):
                 info = core.write_gallery_info(folder, "https://www.site.com/g/", {"title": title, "tags": ["a"]},
-                                               files, True, False)
+                                               files, True, "site")
                 core.update_library(base, info)
             with open(os.path.join(folder, core.INFO_FILE), encoding="utf-8") as f:
                 saved = json.load(f)
@@ -158,6 +158,55 @@ class Queue(unittest.TestCase):
             again = core.Store(store.path).load()
             self.assertEqual(again.batches[1]["links"][0]["status"], "waiting")
             self.assertEqual([x["id"] for x in again.due()], [b["id"]])
+
+
+class Finder(unittest.TestCase):
+    PAGE = """<html><head><title>Gallery</title><meta property="og:site_name" content="Site">
+    <meta name="keywords" content="a, b"></head><body>
+    <img src="/logo.png">
+    <a data-fancybox="g" data-srcset="/c/1_1200.jpg 1200w, /c/1_800.jpg 800w" href="/c/1_1200.jpg">
+      <img src="/c/1_w400.jpg" srcset="/c/1_w400.jpg 400w, /c/1_w800.jpg 800w"></a>
+    <a data-fancybox="g" data-srcset="/c/2_2400.jpg 2400w, /c/2_1800.jpg 1800w" href="/c/2_1800.jpg">
+      <img src="/c/2_w400.jpg"></a>
+    <a href="/c/3_original.jpg" data-srcset="/c/3_800.jpg 800w"><img src="/c/3_t.jpg"></a>
+    <img src="/c/4_t.jpg" data-orig-file="/c/4_full.jpg">
+    <a href="/other-gallery/"><img src="/o/masonry_600.jpg"></a>
+    <a href="/c/1_1200.jpg"><img src="/c/1_again.jpg"></a>
+    </body></html>"""
+
+    def find(self, pages, start="https://site.example/g/"):
+        def get(url, referer=None):
+            return url, pages[url]
+        return finder.find(start, get=get, pause=0, report=lambda *a, **k: None)
+
+    def test_largest_size_of_each_thumbnail_in_page_order(self):
+        result = self.find({"https://site.example/g/": self.PAGE})
+        self.assertEqual(result["pictures"], ["https://site.example/c/1_1200.jpg", "https://site.example/c/2_2400.jpg",
+                                              "https://site.example/c/3_original.jpg", "https://site.example/c/4_full.jpg"])
+        self.assertEqual((result["title"], result["og_site_name"], result["keywords"]), ("Gallery", "Site", "a, b"))
+        self.assertEqual(core.pick_meta(result)[:2], ("Gallery", "Site"))
+
+    def test_photo_pages_are_visited(self):
+        index = "".join(f'<a href="/p/{n}.html"><img src="/t{n}.jpg"></a>' for n in (1, 2, 3))
+        index += '<a href="/about/"><img src="/team.jpg"></a>'
+        pages = {"https://site.example/g/": index,
+                 "https://site.example/p/1.html": '<meta property="og:image" content="/big/1.jpg"><img src="/big/1.jpg">',
+                 "https://site.example/p/2.html": '<a href="/big/2.jpg"><img src="/mid/2.jpg"></a>',
+                 "https://site.example/p/3.html": '<img src="/x.gif" width="20"><img src="/big/3.jpg" width="900">'}
+        result = self.find(pages)
+        self.assertEqual(result["how"], "photo pages")
+        self.assertEqual(result["pictures"], ["https://site.example/big/1.jpg", "https://site.example/big/2.jpg",
+                                              "https://site.example/big/3.jpg"])
+
+    def test_image_host_pages_go_to_gallery_dl(self):
+        index = "".join(f'<a href="https://host.example/i/{n}"><img src="https://host.example/t/{n}.jpg"></a>'
+                        for n in (1, 2))
+        result = self.find({"https://site.example/g/": index})
+        self.assertEqual(result["how"], "image host pages")
+        self.assertEqual(result["pictures"], ["https://host.example/i/1", "https://host.example/i/2"])
+
+    def test_nothing_found(self):
+        self.assertEqual(self.find({"https://site.example/g/": "<p>text</p><img src='/a.jpg'>"})["pictures"], [])
 
 
 if __name__ == "__main__":
