@@ -1,14 +1,15 @@
 """Kollect window: paste links, pick a folder, add. Each batch has Play/Pause, a start time and its own folder."""
 import os
+import subprocess
 import time
 
 import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
-from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
+from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk  # noqa: E402
 
-from . import __version__, core  # noqa: E402
+from . import __version__, browsers, core  # noqa: E402
 from .runner import Controller  # noqa: E402
 
 STATUS_ICONS = {"waiting": "content-loading-symbolic", "done": "object-select-symbolic",
@@ -168,7 +169,12 @@ class Window(Adw.ApplicationWindow):
             body.append(w)
         self.toasts = Adw.ToastOverlay(child=body)
         view = Adw.ToolbarView(content=self.toasts)
-        view.add_top_bar(Adw.HeaderBar())
+        header = Adw.HeaderBar()
+        to_browsers = Gtk.Button(label="Add to browsers",
+                                 tooltip_text="Send open tabs or highlighted links from your browsers to Kollect")
+        to_browsers.connect("clicked", lambda *_: BrowsersDialog(self).present(self))
+        header.pack_start(to_browsers)
+        view.add_top_bar(header)
         self.set_content(view)
 
         self.connect("notify::is-active", self.on_active)
@@ -260,6 +266,20 @@ class Window(Adw.ApplicationWindow):
         base = core.expand(self.folder.get_text()) or core.expand(core.DEFAULT_BASE)
         os.makedirs(base, exist_ok=True)
         open_folder(base)
+
+    def paste_links(self, links):
+        """Links sent by the browser add-on: added to the links box, below what is already there."""
+        buf = self.links.get_buffer()
+        text = buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False)
+        have = set(core.find_links(text))
+        fresh = [u for u in links if u not in have]
+        if fresh:
+            if text and not text.endswith("\n"):
+                buf.insert(buf.get_end_iter(), "\n")
+            buf.insert(buf.get_end_iter(), "\n".join(fresh) + "\n")
+        self.last_clip = "\n".join(links) + "\n"  # the add-on copied the same text; do not fill it in twice
+        self.present()
+        self.toast(f"{plural(len(fresh), 'link')} from the browser" if fresh else "Those links are already in the box")
 
     # ------------------------------------------------------------ the queue list
 
@@ -462,6 +482,83 @@ class Window(Adw.ApplicationWindow):
             self.close()
 
 
+class BrowsersDialog(Adw.Dialog):
+    """Add to browsers: short steps for each browser on this computer, with buttons for the parts Kollect can do.
+    Chrome-family browsers do not open their add-on page for other programs, so its address is copied instead."""
+
+    CHROMIUM_STEPS = ("1. Press Open {name}: {name} opens and its add-on page's address is copied. "
+                      "In {name}, press Ctrl+L, Ctrl+V and Enter.\n"
+                      "2. Turn on Developer mode.\n"
+                      "3. Press Copy add-on folder here, then Load unpacked in {name}, then Ctrl+L, Ctrl+V and Enter.\n"
+                      "4. Open the add-on's Details and turn on {private}.\n"
+                      "This is done once; the add-on stays.")
+    FIREFOX_STEPS = ("1. Press Open add-on test page: Firefox opens it and the add-on file's address is copied.\n"
+                     "2. Press Load Temporary Add-on…, then Ctrl+L, Ctrl+V and Enter.\n"
+                     "3. For private windows: press Open add-ons manager, choose Kollect, and set Run in Private "
+                     "Windows to Allow.\n"
+                     "The first time you send links, your system may ask whether Firefox may start Kollect's "
+                     "helper: choose Allow. Firefox removes temporary add-ons when it closes, so do steps 1 to 3 "
+                     "again after each restart.")
+    PRIVATE = {"Brave": "Allow in Private", "Microsoft Edge": "Allow in InPrivate"}
+
+    def __init__(self, window):
+        super().__init__(title="Add to browsers", content_width=600, content_height=680)
+        page = Adw.PreferencesPage()
+        try:
+            ready = browsers.register()
+        except OSError as e:
+            ready = []
+            page.add(Adw.PreferencesGroup(description=f"The connection to Kollect could not be set up: {e.strerror}"))
+        intro = ("The add-on's button sends the addresses of your open tabs (this window or all windows) to "
+                 "Kollect's links box. Right-click on highlighted text and choose Send selected links to Kollect "
+                 "to send the links in it. Both are also copied to the clipboard.")
+        if ready:
+            intro += "\n\nKollect's connection is ready for " + ", ".join(ready) + "."
+        page.add(Adw.PreferencesGroup(description=intro))
+        for browser in browsers.found():
+            if browser.kind == "firefox":
+                steps = self.FIREFOX_STEPS
+                buttons = [("Open add-on test page", lambda b=browser: self.launch(b, b.page, browsers.what_to_load(b))),
+                           ("Open add-ons manager", lambda b=browser: self.launch(b, "about:addons"))]
+            else:
+                steps = self.CHROMIUM_STEPS.format(name=browser.name,
+                                                   private=self.PRIVATE.get(browser.name, "Allow in Incognito"))
+                buttons = [(f"Open {browser.name}", lambda b=browser: self.launch(b, None, b.page)),
+                           ("Copy add-on folder", lambda b=browser: self.copy(browsers.what_to_load(b)))]
+            group = Adw.PreferencesGroup(title=browser.name, description=steps)
+            row = Gtk.Box(spacing=8, margin_top=6)
+            for i, (label, action) in enumerate(buttons):
+                button = Gtk.Button(label=label)
+                if i == 0:
+                    button.add_css_class("suggested-action")
+                button.connect("clicked", lambda _b, act=action: act())
+                row.append(button)
+            group.add(row)
+            page.add(group)
+        if not browsers.found():
+            page.add(Adw.PreferencesGroup(description="No supported browser was found on this computer."))
+        self.toasts = Adw.ToastOverlay(child=page)
+        view = Adw.ToolbarView(content=self.toasts)
+        view.add_top_bar(Adw.HeaderBar())
+        self.set_child(view)
+
+    def copy(self, text):
+        value = GObject.Value(GObject.TYPE_STRING, text)
+        self.get_clipboard().set_content(Gdk.ContentProvider.new_for_value(value))
+        self.toasts.add_toast(Adw.Toast(title=f"Copied: {text}", timeout=5))
+
+    def launch(self, browser, url, copy_text=None):
+        """Open the browser (at url when it accepts one from other programs) and copy what the next step pastes."""
+        try:
+            subprocess.Popen([browser.command] + ([url] if url else []), stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        except (OSError, TypeError) as e:
+            self.toasts.add_toast(Adw.Toast(title=f"{browser.name} did not open: {e}", timeout=5))
+            return
+        if copy_text:
+            self.copy(copy_text)
+
+
 class App(Adw.Application):
     def __init__(self):
         super().__init__(application_id=core.APP_ID, flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
@@ -485,6 +582,9 @@ class App(Adw.Application):
             return 0
         self.do_activate()
         links = core.find_links(" ".join(a for a in args if not a.startswith("--")))
+        if "--paste" in args:  # from the browser add-on: into the links box, not straight into the queue
+            self.window.paste_links(links)
+            return 0
         fresh = [u for u in links if u not in self.ctl.store.queued_urls()]
         if fresh:
             base = core.expand(self.settings["base"]) or core.expand(core.DEFAULT_BASE)

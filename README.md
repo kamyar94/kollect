@@ -40,6 +40,9 @@ Created by Kamyar Fatemifar.
     takes the thumbnails, every size the page offers, and the page's own logos and buttons.
 - **Start times.** A batch can wait for a time of day. If Kollect is closed at that time, a
   systemd user timer opens it and the batch starts.
+- **From your browser.** A browser add-on for Chrome, Brave, Chromium, Edge, Vivaldi and Firefox
+  sends the addresses of your open tabs, or the links in highlighted text, straight into Kollect's
+  links box and copies them to the clipboard. See [Send links from your browser](#send-links-from-your-browser).
 - **Paper-simple.** One window. A link already on the clipboard is filled in when you switch to
   Kollect.
 
@@ -89,6 +92,43 @@ Closing Kollect while it downloads asks first; the batch is then paused and cont
 it stopped when you press Start again. When Kollect opens, nothing starts by itself except
 batches whose start time has come.
 
+## Send links from your browser
+
+Kollect comes with a small browser add-on. Its toolbar button opens a panel with two choices:
+**This window** sends the addresses of the tabs in the window you are in, and **All windows** sends
+the tabs of every window of the same kind, so private (incognito) tabs never mix with normal ones.
+Only the tab addresses are sent, not the links inside the pages.
+
+![The add-on's panel after sending three tabs](docs/screenshots/browser-panel.png)
+
+To send links from a page instead, highlight the part of the page that holds them, right-click
+and choose **Send selected links to Kollect**: every link the highlight touches is sent, plus any
+web address written in the highlighted text. Right-clicking a single link sends that link.
+
+Either way the links are copied to the clipboard and added to Kollect's links box, and Kollect
+opens if it was closed. You then choose the folder, Full size or Everything and numbering, and
+press Add and start as usual.
+
+To set it up, open Kollect and press **Add to browsers**. It lists the browsers on your computer
+with the steps for each:
+
+- **Chrome, Brave, Chromium, Edge, Vivaldi**: once, turn on Developer mode on the browser's add-on
+  page and load the add-on folder with *Load unpacked*, then allow it in incognito or private
+  windows in the add-on's details. Kollect copies the add-on page's address and the folder for you.
+- **Firefox**: Firefox keeps only add-ons signed by Mozilla, so Kollect's add-on is loaded as a
+  temporary add-on from Firefox's add-on test page, again after each Firefox restart, and allowed in
+  private windows from the add-ons manager. With Firefox from Ubuntu's snap, the system asks once
+  whether Firefox may start Kollect's helper.
+
+![Add to browsers](docs/screenshots/add-to-browsers.png)
+
+The add-on reaches Kollect through the browsers' native messaging: `install.sh` registers a small
+helper, `io.github.kamyar94.kollect`, for every browser it finds (for example in
+`~/.config/BraveSoftware/Brave-Browser/NativeMessagingHosts/` and
+`~/.mozilla/native-messaging-hosts/`), and that helper hands the links to `kollect --paste`.
+`./install.sh --uninstall` removes the registrations again. The add-on itself is in
+`browser-addon/`.
+
 ## Where files go
 
 ```
@@ -136,11 +176,14 @@ checks folder names, numbering, metadata, the library file, start times, the sav
 full-size picture finder.
 `tests/atspi_drive.py` drives a running Kollect window through the accessibility bus, and
 `tests/site/` has a small local test website with pictures in a known page order; its server file
-explains how gallery-dl is pointed at it.
+explains how gallery-dl is pointed at it. `tests/browser_drive.mjs` (Chrome family) and
+`tests/firefox_drive.mjs` (Firefox) load the add-on into a browser with a throwaway profile and
+use its panel and right-click action (Node 22 or newer).
 
-The screenshots above come from `python3 tools/screenshots.py docs/screenshots`, which opens a
+The window pictures above come from `python3 tools/screenshots.py docs/screenshots`, which opens a
 separate Kollect window filled with example batches (nothing is downloaded and your own queue is not
-touched) and saves it as pictures.
+touched) and saves it as pictures; the add-on panel picture comes from `tests/browser_drive.mjs` with
+`KOLLECT_PANEL_SHOT` set.
 
 ## License
 

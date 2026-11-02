@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Kollect",
+  "version": "1.0.0",
+  "description": "Send the addresses of your open tabs, or the links in highlighted text, to Kollect and copy them to the clipboard.",
+  "browser_specific_settings": {"gecko": {"id": "kollect@kamyar94.github.io", "strict_min_version": "128.0"}},
+  "permissions": ["tabs", "nativeMessaging", "clipboardWrite", "contextMenus", "scripting", "activeTab"],
+  "action": {
+    "default_title": "Send tabs to Kollect",
+    "default_popup": "popup.html",
+    "default_icon": {"16": "icons/kollect-16.png", "32": "icons/kollect-32.png", "48": "icons/kollect-48.png"}
+  },
+  "background": {"scripts": ["shared.js", "background.js"]},
+  "icons": {"16": "icons/kollect-16.png", "32": "icons/kollect-32.png", "48": "icons/kollect-48.png",
+            "128": "icons/kollect-128.png"}
+}

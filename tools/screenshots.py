@@ -89,6 +89,9 @@ class ShotApp(ui.App):
                  (0.3, lambda: win.add_menu.popdown()),
                  (0.3, lambda: open_clock(win, 1)),
                  (1.0, lambda: shoot(win, "start-time.png", clock_popover(win, 1))),
+                 (0.3, lambda: clock_buttons(win)[1].popdown()),
+                 (0.3, lambda: ui.BrowsersDialog(win).present(win)),
+                 (1.5, lambda: shoot(win, "add-to-browsers.png")),
                  (0.3, self.quit)]
         run_steps(steps)
         return 0

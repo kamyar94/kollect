@@ -15,6 +15,7 @@ refresh() {
 }
 
 if [ "${1:-}" = "--uninstall" ]; then
+    python3 "$DATA/kollect/kollect/browsers.py" --unregister >/dev/null 2>&1 || true
     rm -rf "$DATA/kollect"
     rm -f "$BIN/kollect" "$DATA/applications/$APP_ID.desktop" "$DATA/icons/hicolor/scalable/apps/$APP_ID.svg"
     refresh
@@ -29,15 +30,18 @@ if ! python3 -c 'import gi; gi.require_version("Gtk", "4.0"); gi.require_version
 fi
 
 mkdir -p "$DATA/kollect" "$BIN" "$DATA/applications" "$DATA/icons/hicolor/scalable/apps"
-rm -rf "$DATA/kollect/kollect"
+rm -rf "$DATA/kollect/kollect" "$DATA/kollect/browser-addon"
 mkdir -p "$DATA/kollect/kollect"
 cp "$SRC"/kollect/*.py "$DATA/kollect/kollect/"
+cp -r "$SRC/browser-addon" "$DATA/kollect/browser-addon"
 install -m 755 "$SRC/bin/kollect" "$BIN/kollect"
 sed "s|@BIN@|$BIN/kollect|" "$SRC/data/$APP_ID.desktop.in" > "$DATA/applications/$APP_ID.desktop"
 install -m 644 "$SRC/data/$APP_ID.svg" "$DATA/icons/hicolor/scalable/apps/$APP_ID.svg"
 refresh
+python3 "$DATA/kollect/kollect/browsers.py"
 
 echo "Kollect installed: look for it in your app list, or run: kollect"
+echo "To send tabs from your browsers, open Kollect and press Add to browsers."
 if ! command -v gallery-dl >/dev/null 2>&1 && [ ! -x "$BIN/gallery-dl" ]; then
     echo
     echo "gallery-dl is not installed yet. Kollect needs it to download:"

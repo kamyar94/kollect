@@ -1,0 +1,69 @@
+body {
+  width: 260px;
+  margin: 0;
+  padding: 12px;
+  font: 14px system-ui, sans-serif;
+  color: #241f31;
+  background: #ffffff;
+}
+
+h1 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+button {
+  display: block;
+  width: 100%;
+  margin: 0 0 8px;
+  padding: 8px;
+  border: 0;
+  border-radius: 8px;
+  font: inherit;
+  font-weight: 600;
+  color: #ffffff;
+  background: #3584e4;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #1c71d8;
+}
+
+button:disabled {
+  opacity: 0.6;
+}
+
+p {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: #5e5c64;
+}
+
+p.done {
+  color: #26a269;
+}
+
+p.problem {
+  color: #c01c28;
+}
+
+@media (prefers-color-scheme: dark) {
+  body {
+    color: #ffffff;
+    background: #242424;
+  }
+
+  p {
+    color: #c0bfbc;
+  }
+
+  p.done {
+    color: #8ff0a4;
+  }
+
+  p.problem {
+    color: #ff7b63;
+  }
+}

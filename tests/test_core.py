@@ -1,14 +1,18 @@
 """Checks for the parts of Kollect that need no window. Run: python3 -m unittest discover tests"""
+import base64
 import csv
+import hashlib
+import io
 import json
 import os
 import sys
 import tempfile
 import time
 import unittest
+import zipfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from kollect import core, finder  # noqa: E402
+from kollect import browser_host, browsers, core, finder  # noqa: E402
 
 
 class Links(unittest.TestCase):
@@ -209,6 +213,53 @@ class Finder(unittest.TestCase):
 
     def test_nothing_found(self):
         self.assertEqual(self.find({"https://site.example/g/": "<p>text</p><img src='/a.jpg'>"})["pictures"], [])
+
+
+class BrowserBridge(unittest.TestCase):
+    def test_message_round_trip_and_cleaning(self):
+        stream = io.BytesIO()
+        browser_host.write_message(stream, {"action": "paste", "links": ["https://a.example/1"]})
+        stream.seek(0)
+        self.assertEqual(browser_host.read_message(stream), {"action": "paste", "links": ["https://a.example/1"]})
+        self.assertEqual(browser_host.clean(["https://a.example/1", "javascript:x", "https://a.example/1",
+                                             "http://b.example/a b", 5, "about:blank", "http://c.example/"]),
+                         ["https://a.example/1", "http://c.example/"])
+
+    def test_bad_requests_get_an_answer(self):
+        self.assertFalse(browser_host.answer({"action": "other"})["ok"])
+        self.assertEqual(browser_host.answer({"action": "paste", "links": ["about:blank"]})["error"], "no web links")
+
+    def test_chromium_id_matches_the_manifest_key(self):
+        with open(os.path.join(browsers.ADDON, "manifest.json"), encoding="utf-8") as f:
+            key = json.load(f)["key"]
+        digest = hashlib.sha256(base64.b64decode(key)).hexdigest()[:32]
+        self.assertEqual("".join("abcdefghijklmnop"[int(c, 16)] for c in digest), browsers.CHROMIUM_ID)
+
+    def test_registration_and_firefox_package(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old = os.environ.get("XDG_DATA_HOME")
+            os.environ["XDG_DATA_HOME"] = os.path.join(tmp, "data")
+            try:
+                chrome = browsers.Browser("Test", ("none",), os.path.join(tmp, "chrome"), "chrome://extensions/",
+                                          "chromium")
+                self.assertEqual(browsers.register([chrome]), ["Test"])
+                with open(chrome.manifest_path, encoding="utf-8") as f:
+                    manifest = json.load(f)
+                self.assertEqual(manifest["name"], browsers.HOST_NAME)
+                self.assertEqual(manifest["allowed_origins"], [f"chrome-extension://{browsers.CHROMIUM_ID}/"])
+                self.assertTrue(os.path.isfile(manifest["path"]))
+                with zipfile.ZipFile(browsers.firefox_package()) as z:
+                    names = z.namelist()
+                    inside = json.loads(z.read("manifest.json"))
+                self.assertIn("browser_specific_settings", inside)
+                self.assertNotIn("key", inside)
+                self.assertNotIn("manifest.firefox.json", names)
+                self.assertIn("background.js", names)
+            finally:
+                if old is None:
+                    del os.environ["XDG_DATA_HOME"]
+                else:
+                    os.environ["XDG_DATA_HOME"] = old
 
 
 if __name__ == "__main__":

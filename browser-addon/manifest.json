@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Kollect",
+  "version": "1.0.0",
+  "description": "Send the addresses of your open tabs, or the links in highlighted text, to Kollect and copy them to the clipboard.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA6J9BKAeHzmZMC1bjl8CyC4kx8Sap559FtYgUijMpnZxmyU7zWRKcTLKwy7nt5+4+1hOWCiu3uPIOJ7JsmBwiQ9Zn2PJsksFqdn3fS4z9eoKjjnt5ATx5VEosFYdOm2eJ1blm4xcBBz4Jckqu1dSYKxE7C0KUtMlaa2rn0SFAwAg3U0jvxHNaTdlvv+xDaoLb3/I5i7bJTeA+GLqNJh0yhvJZvj7xpBsu1Am2nQfnLfKFdfCZeLa+hYiVJEPrF+kCY9r8TU7SBrFCZhWm20lTZ52jvIOtyo6i5xzT/YhFRIq0WmpFr9w11lO8LmJ0irMXi3T3c8Ca6GJdv/h2qaiSRwIDAQAB",
+  "permissions": ["tabs", "nativeMessaging", "clipboardWrite", "contextMenus", "scripting", "activeTab"],
+  "action": {
+    "default_title": "Send tabs to Kollect",
+    "default_popup": "popup.html",
+    "default_icon": {"16": "icons/kollect-16.png", "32": "icons/kollect-32.png", "48": "icons/kollect-48.png"}
+  },
+  "background": {"service_worker": "background.js"},
+  "icons": {"16": "icons/kollect-16.png", "32": "icons/kollect-32.png", "48": "icons/kollect-48.png",
+            "128": "icons/kollect-128.png"}
+}
