@@ -131,6 +131,8 @@ class Library(unittest.TestCase):
             with open(os.path.join(base, core.LIBRARY_FILE), newline="", encoding="utf-8-sig") as f:
                 rows = list(csv.DictReader(f))
             self.assertEqual(len(rows), 1)
+            leftovers = [n for d in (base, folder) for n in os.listdir(d) if n.endswith(".tmp")]
+            self.assertEqual(leftovers, [])
             self.assertEqual((rows[0]["Title"], rows[0]["Folder"], rows[0]["Tags"]),
                              ("Second", os.path.join("site.com", "g"), "a"))
 

@@ -8,6 +8,8 @@ tags, name and address in a small file and in one library spreadsheet.
 
 Created by Kamyar Fatemifar.
 
+![Kollect with three batches: one downloading, one waiting for its start time, one paused](docs/screenshots/main.png)
+
 ## What it does
 
 - **A queue of links.** Paste many links at once, one per line. They download one after another
@@ -73,10 +75,15 @@ removes the program and leaves your downloads, the queue and the settings in pla
 5. Press **Add and start** (or Ctrl+Enter in the links box). The arrow next to it adds the batch
    paused, or with a start time.
 
-Each batch shows its folder, how many links are done, and four buttons: Start/Pause, the clock
-(set or remove a start time), open the folder, and remove the batch from the list. Each link shows
-its progress and has buttons to open its gallery folder and to remove it from the list. *Clear
-finished* removes finished rows from the list; the downloaded files stay.
+![The arrow next to Add and start: Add paused, or add with a start time](docs/screenshots/add-menu.png)
+
+Each batch shows its folder, how many links are done, its choices (full size or everything,
+numbered) and its state, with four buttons: remove the batch from the list, open its folder, the
+clock (set or remove a start time) and Start/Pause. Each link shows its progress and has buttons
+to open its gallery folder and to remove it from the list. *Clear finished* removes finished rows
+from the list; the downloaded files stay.
+
+![A batch's clock: set or remove its start time](docs/screenshots/start-time.png)
 
 Closing Kollect while it downloads asks first; the batch is then paused and continues from where
 it stopped when you press Start again. When Kollect opens, nothing starts by itself except
@@ -130,6 +137,10 @@ full-size picture finder.
 `tests/atspi_drive.py` drives a running Kollect window through the accessibility bus, and
 `tests/site/` has a small local test website with pictures in a known page order; its server file
 explains how gallery-dl is pointed at it.
+
+The screenshots above come from `python3 tools/screenshots.py docs/screenshots`, which opens a
+separate Kollect window filled with example batches (nothing is downloaded and your own queue is not
+touched) and saves it as pictures.
 
 ## License
 

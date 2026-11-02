@@ -348,12 +348,12 @@ def update_library(base, info):
     row = {"Downloaded": info["downloaded"], "Site": info["site"], "Title": info["title"], "Name": info["name"],
            "Tags": "; ".join(info["tags"]), "URL": info["url"], "Folder": folder, "Images": str(info["images"])}
     rows = [r for r in rows if r.get("URL") != info["url"]] + [row]
-    tmp = path + ".tmp"
-    with open(tmp, "w", newline="", encoding="utf-8-sig") as f:
+    def write(f):
         w = csv.DictWriter(f, fieldnames=LIBRARY_COLUMNS, extrasaction="ignore")
         w.writeheader()
         w.writerows(rows)
-    os.replace(tmp, path)
+
+    _replace_file(path, write, newline="", encoding="utf-8-sig")
 
 
 # ---------------------------------------------------------------- start times
@@ -389,12 +389,26 @@ def _config_dir():
     return os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "kollect")
 
 
+def _replace_file(path, write, **open_args):
+    """Write a whole file safely: into a hidden temporary file next to it, then swap it in, so a crash
+    never leaves a half-written file. The temporary file is removed if anything goes wrong."""
+    folder, name = os.path.split(path)
+    tmp = os.path.join(folder, f".{name}.tmp")
+    try:
+        with open(tmp, "w", **open_args) as f:
+            write(f)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def _write_json(path, data):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-    os.replace(tmp, path)
+    _replace_file(path, lambda f: json.dump(data, f, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def _read_json(path):
