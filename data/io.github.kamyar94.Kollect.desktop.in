@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Kollect
+GenericName=Gallery Downloader
+Comment=Download whole image galleries from a list of links (uses gallery-dl)
+Exec="@BIN@" %U
+Icon=io.github.kamyar94.Kollect
+Terminal=false
+Categories=Network;FileTransfer;
+Keywords=gallery;images;pictures;photos;download;bulk;gallery-dl;
+StartupNotify=true
+StartupWMClass=io.github.kamyar94.Kollect

@@ -1,0 +1,15 @@
+#!/usr/bin/env python3
+"""Start Kollect. Works from the repository (bin/kollect) and after install (~/.local/bin/kollect)."""
+import os
+import sys
+
+here = os.path.dirname(os.path.realpath(__file__))
+data = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+for place in (os.path.join(here, ".."), os.path.join(data, "kollect")):
+    if os.path.isfile(os.path.join(place, "kollect", "ui.py")):
+        sys.path.insert(0, os.path.abspath(place))
+        break
+
+from kollect.ui import main  # noqa: E402
+
+sys.exit(main(sys.argv))

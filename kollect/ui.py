@@ -1,0 +1,497 @@
+"""Kollect window: paste links, pick a folder, add. Each batch has Play/Pause, a start time and its own folder."""
+import os
+import time
+
+import gi
+
+gi.require_version("Gtk", "4.0")
+gi.require_version("Adw", "1")
+from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
+
+from . import __version__, core  # noqa: E402
+from .runner import Controller  # noqa: E402
+
+STATUS_ICONS = {"waiting": "content-loading-symbolic", "done": "object-select-symbolic",
+                "failed": "dialog-warning-symbolic"}
+
+
+def a11y(widget, label):
+    widget.update_property([Gtk.AccessibleProperty.LABEL], [label])
+    return widget
+
+
+def icon_button(icon, label, callback, *args):
+    button = Gtk.Button(icon_name=icon, tooltip_text=label, valign=Gtk.Align.CENTER)
+    button.add_css_class("flat")
+    a11y(button, label)
+    button.connect("clicked", lambda *_: callback(*args))
+    return button
+
+
+def open_folder(path):
+    if path and os.path.isdir(path):
+        Gio.AppInfo.launch_default_for_uri(GLib.filename_to_uri(path, None), None)
+
+
+def plural(n, word):
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
+class TimePicker(Gtk.Box):
+    """'Start at HH : MM' with two spin buttons."""
+
+    def __init__(self, start_at=None):
+        super().__init__(spacing=6)
+        when = time.localtime(start_at or time.time() + 3600)
+        self.hour = self._spin(23, when.tm_hour, 1, "Hour")
+        self.minute = self._spin(59, when.tm_min if start_at else 0, 5, "Minute")
+        self.append(Gtk.Label(label="Start at"))
+        self.append(self.hour)
+        self.append(Gtk.Label(label=":"))
+        self.append(self.minute)
+
+    @staticmethod
+    def _spin(top, value, step, label):
+        spin = Gtk.SpinButton.new_with_range(0, top, step)
+        spin.set_wrap(True)
+        spin.set_numeric(True)
+        spin.set_width_chars(2)
+        spin.set_value(value)
+
+        def two_digits(s):
+            s.set_text(f"{int(s.get_value()):02d}")
+            return True
+
+        spin.connect("output", two_digits)
+        return a11y(spin, label)
+
+    def timestamp(self):
+        return core.next_time(int(self.hour.get_value()), int(self.minute.get_value()))
+
+
+class Window(Adw.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="Kollect", default_width=780, default_height=700)
+        self.ctl = app.ctl
+        self.settings = app.settings
+        self.collapsed = set()
+        self.batch_widgets = {}
+        self.link_widgets = {}
+        self.shape = None
+        self.last_clip = None
+        self.closing = False
+
+        # links box
+        self.links = Gtk.TextView(wrap_mode=Gtk.WrapMode.WORD_CHAR, accepts_tab=False,
+                                  top_margin=8, bottom_margin=8, left_margin=10, right_margin=10)
+        a11y(self.links, "Links")
+        hint = Gtk.Label(label="Paste links here, one per line", xalign=0, yalign=0,
+                         margin_top=8, margin_start=12, can_target=False)
+        hint.add_css_class("dim-label")
+        self.links.get_buffer().connect("changed", lambda buf: hint.set_visible(buf.get_char_count() == 0))
+        keys = Gtk.EventControllerKey()
+        keys.connect("key-pressed", self.on_links_key)
+        self.links.add_controller(keys)
+        scroller = Gtk.ScrolledWindow(child=self.links, min_content_height=100, max_content_height=180,
+                                      propagate_natural_height=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
+        overlay = Gtk.Overlay(child=scroller)
+        overlay.add_overlay(hint)
+        links_frame = Gtk.Frame(child=overlay)
+
+        # where the batch is saved
+        self.folder = Gtk.Entry(text=core.shorten(core.expand(self.settings["base"])), hexpand=True)
+        a11y(self.folder, "Save in")
+        folder_row = Gtk.Box(spacing=8)
+        folder_row.append(Gtk.Label(label="Save in"))
+        folder_row.append(self.folder)
+        folder_row.append(icon_button("folder-open-symbolic", "Choose folder", self.choose_folder))
+
+        # numbering and the add button
+        self.number = Gtk.Switch(active=bool(self.settings["numbered"]), valign=Gtk.Align.CENTER)
+        a11y(self.number, "Number files")
+        number_label = Gtk.Label(label="Number files 001, 002, 003… in page order", xalign=0, hexpand=True)
+        self.add_time = TimePicker()
+        add_later = Gtk.Button(label="Add paused")
+        add_later.add_css_class("flat")
+        add_at = Gtk.Button(label="Add with this start time")
+        menu = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin_top=6, margin_bottom=6,
+                       margin_start=6, margin_end=6)
+        for w in (add_later, Gtk.Separator(), self.add_time, add_at):
+            menu.append(w)
+        self.add_menu = Gtk.Popover(child=menu)
+        self.add_button = Adw.SplitButton(label="Add and start", popover=self.add_menu,
+                                          dropdown_tooltip="Add paused, or with a start time")
+        self.add_button.add_css_class("suggested-action")
+        self.add_button.connect("clicked", lambda *_: self.add("now"))
+        add_later.connect("clicked", lambda *_: self.add("paused"))
+        add_at.connect("clicked", lambda *_: self.add("at", self.add_time.timestamp()))
+        options_row = Gtk.Box(spacing=10)
+        options_row.append(self.number)
+        options_row.append(number_label)
+        options_row.append(self.add_button)
+
+        self.status = Gtk.Label(xalign=0, wrap=True)
+        self.status.add_css_class("heading")
+
+        # the queue
+        self.list = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE, valign=Gtk.Align.START)
+        self.list.add_css_class("boxed-list")
+        empty = Gtk.Label(label="Nothing in the queue yet", margin_top=24, margin_bottom=24)
+        empty.add_css_class("dim-label")
+        self.list.set_placeholder(empty)
+        list_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, margin_start=2, margin_end=2, margin_bottom=6)
+        list_box.append(self.list)
+        list_scroll = Gtk.ScrolledWindow(child=list_box, vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER)
+
+        clear = Gtk.Button(label="Clear finished")
+        clear.connect("clicked", lambda *_: self.ctl.clear_finished())
+        open_all = Gtk.Button(label="Open downloads folder")
+        open_all.connect("clicked", lambda *_: self.open_base())
+        bottom = Gtk.Box(spacing=8, halign=Gtk.Align.END)
+        bottom.append(clear)
+        bottom.append(open_all)
+
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
+                       margin_top=12, margin_bottom=12, margin_start=12, margin_end=12)
+        for w in (links_frame, folder_row, options_row, self.status, list_scroll, bottom):
+            body.append(w)
+        self.toasts = Adw.ToastOverlay(child=body)
+        view = Adw.ToolbarView(content=self.toasts)
+        view.add_top_bar(Adw.HeaderBar())
+        self.set_content(view)
+
+        self.connect("notify::is-active", self.on_active)
+        self.connect("close-request", self.on_close)
+        self.on_change()
+
+    # ------------------------------------------------------------ adding
+
+    def on_links_key(self, _ctrl, keyval, _code, state):
+        if keyval in (Gdk.KEY_Return, Gdk.KEY_KP_Enter) and state & Gdk.ModifierType.CONTROL_MASK:
+            self.add("now")
+            return True
+        return False
+
+    def toast(self, text):
+        self.toasts.add_toast(Adw.Toast(title=text, timeout=4))
+
+    def add(self, start, start_at=None):
+        self.add_menu.popdown()
+        buf = self.links.get_buffer()
+        links = core.find_links(buf.get_text(buf.get_start_iter(), buf.get_end_iter(), False))
+        if not links:
+            self.toast("Paste links that start with http:// or https://")
+            return
+        queued = self.ctl.store.queued_urls()
+        fresh = [u for u in links if u not in queued]
+        if not fresh:
+            self.toast("Those links are already in the queue")
+            return
+        base = core.expand(self.folder.get_text()) or core.expand(core.DEFAULT_BASE)
+        try:
+            os.makedirs(base, exist_ok=True)
+        except OSError as e:
+            self.toast(f"Cannot use that folder: {e.strerror}")
+            return
+        self.folder.set_text(core.shorten(base))
+        self.settings["base"] = core.shorten(base)
+        self.settings["numbered"] = self.number.get_active()
+        self.settings.save()
+        self.ctl.add_batch(fresh, base, self.number.get_active(), start, start_at)
+        buf.set_text("")
+        msg = "Added " + plural(len(fresh), "link")
+        if len(fresh) < len(links):
+            msg += f" ({len(links) - len(fresh)} already in the queue)"
+        if start == "paused":
+            msg += ", paused"
+        elif start == "at":
+            msg += ", starts " + core.describe_time(start_at)
+        if not core.find_gallery_dl(self.settings):
+            msg = "gallery-dl is not installed. Run: pipx install gallery-dl"
+        self.toast(msg)
+
+    def on_active(self, *_):
+        if self.is_active() and not self.links.get_buffer().get_char_count():
+            Gdk.Display.get_default().get_clipboard().read_text_async(None, self.on_clipboard)
+
+    def on_clipboard(self, clipboard, result):
+        try:
+            text = clipboard.read_text_finish(result) or ""
+        except GLib.Error:
+            return
+        if text == self.last_clip:
+            return
+        self.last_clip = text
+        queued = self.ctl.store.queued_urls()
+        links = [u for u in core.find_links(text) if u not in queued]
+        buf = self.links.get_buffer()
+        if links and not buf.get_char_count():
+            buf.set_text("\n".join(links) + "\n")
+
+    def choose_folder(self):
+        dialog = Gtk.FileDialog(title="Save in", modal=True)
+        current = core.expand(self.folder.get_text())
+        if os.path.isdir(current):
+            dialog.set_initial_folder(Gio.File.new_for_path(current))
+        dialog.select_folder(self, None, self.on_folder_chosen)
+
+    def on_folder_chosen(self, dialog, result):
+        try:
+            chosen = dialog.select_folder_finish(result)
+        except GLib.Error:
+            return
+        if chosen and chosen.get_path():
+            self.folder.set_text(core.shorten(chosen.get_path()))
+
+    def open_base(self):
+        base = core.expand(self.folder.get_text()) or core.expand(core.DEFAULT_BASE)
+        os.makedirs(base, exist_ok=True)
+        open_folder(base)
+
+    # ------------------------------------------------------------ the queue list
+
+    def on_change(self, batch_id=None, link_id=None):
+        batches = self.ctl.store.batches
+        shape = [(b["id"], [x["id"] for x in b["links"]]) for b in batches]
+        if batch_id is None and shape != self.shape:
+            self.rebuild(batches)
+            self.shape = shape
+        for b in batches:
+            if batch_id is None or b["id"] == batch_id:
+                self.update_batch(b)
+                for link in b["links"]:
+                    if link_id is None or link["id"] == link_id:
+                        self.update_link(link)
+        self.status.set_label(self.overall())
+
+    def rebuild(self, batches):
+        self.list.remove_all()
+        self.batch_widgets.clear()
+        self.link_widgets.clear()
+        for b in batches:
+            bid = b["id"]
+            exp = Adw.ExpanderRow(use_markup=False, title_lines=1, subtitle_lines=2,
+                                  expanded=bid not in self.collapsed)
+            exp.connect("notify::expanded", self.on_expanded, bid)
+            play = Gtk.Button(valign=Gtk.Align.CENTER)
+            play.add_css_class("flat")
+            play.connect("clicked", self.on_play, bid)
+            when = Gtk.MenuButton(icon_name="alarm-symbolic", tooltip_text="Start time", valign=Gtk.Align.CENTER)
+            when.add_css_class("flat")
+            a11y(when, "Start time")
+            when.set_create_popup_func(self.fill_time_menu, bid)
+            for w in (play, when, icon_button("folder-open-symbolic", "Open folder", self.open_batch, bid),
+                      icon_button("user-trash-symbolic", "Remove batch", self.ctl.remove_batch, bid)):
+                exp.add_suffix(w)
+            self.batch_widgets[bid] = (exp, play)
+            for link in b["links"]:
+                row = Adw.ActionRow(use_markup=False, title_lines=1, subtitle_lines=2)
+                holder = Gtk.Box(valign=Gtk.Align.CENTER)
+                row.add_prefix(holder)
+                folder = icon_button("folder-open-symbolic", "Open gallery folder", self.open_link, link)
+                row.add_suffix(folder)
+                row.add_suffix(icon_button("window-close-symbolic", "Remove link", self.ctl.remove_link,
+                                           bid, link["id"]))
+                exp.add_row(row)
+                self.link_widgets[link["id"]] = (row, holder, folder, [None])
+            self.list.append(exp)
+
+    def on_expanded(self, exp, _pspec, bid):
+        (self.collapsed.discard if exp.get_expanded() else self.collapsed.add)(bid)
+
+    def update_batch(self, b):
+        widgets = self.batch_widgets.get(b["id"])
+        if not widgets:
+            return
+        exp, play = widgets
+        run = self.ctl.run
+        running = run is not None and run.batch is b
+        links = b["links"]
+        done = sum(x["status"] == "done" for x in links)
+        failed = sum(x["status"] == "failed" for x in links)
+        waiting = sum(x["status"] == "waiting" for x in links)
+        parts = [plural(len(links), "link")]
+        if done:
+            parts.append(f"{done} done")
+        if failed:
+            parts.append(f"{failed} failed")
+        if b["numbered"]:
+            parts.append("numbered")
+        if running:
+            state = "Downloading"
+        elif b["state"] == "scheduled":
+            state = f"Starts {core.describe_time(b['start_at'])}"
+        elif b["state"] == "paused":
+            state = "Paused" if waiting or failed else "Finished"
+        elif waiting:
+            state = "Waiting for its turn"
+        else:
+            state = "Finished"
+        exp.set_title(core.shorten(b["base"]))
+        exp.set_subtitle(" · ".join(parts) + " — " + state)
+        pause = running or (b["state"] == "active" and waiting > 0)
+        label = "Pause" if pause else "Start now" if b["state"] == "scheduled" else "Start"
+        play.set_icon_name("media-playback-pause-symbolic" if pause else "media-playback-start-symbolic")
+        play.set_tooltip_text(label)
+        a11y(play, label)
+        play.set_sensitive(pause or waiting > 0 or failed > 0)
+
+    def update_link(self, link):
+        widgets = self.link_widgets.get(link["id"])
+        if not widgets:
+            return
+        row, holder, folder, shown = widgets
+        row.set_title(link["title"] or link["url"])
+        row.set_tooltip_text(link["url"])
+        row.set_subtitle(self.link_text(link))
+        if shown[0] != link["status"]:
+            shown[0] = link["status"]
+            if holder.get_first_child():
+                holder.remove(holder.get_first_child())
+            if link["status"] == "running":
+                holder.append(Adw.Spinner())
+            else:
+                holder.append(Gtk.Image(icon_name=STATUS_ICONS.get(link["status"], "content-loading-symbolic")))
+        folder.set_sensitive(bool(link["folder"]) and os.path.isdir(link["folder"]))
+
+    @staticmethod
+    def link_text(link):
+        status, note = link["status"], link["note"]
+        if status == "running":
+            got = link["new"] + link["old"]
+            if not got:
+                return note or "Starting…"
+            text = f"Downloading… {link['new']} new"
+            if link["old"]:
+                text += f", {link['old']} already here"
+            if link["failed"]:
+                text += f", {link['failed']} failed"
+            return text + (" · whole-page grab" if link["generic"] else "")
+        if status == "done":
+            return "Done: " + note
+        if status == "failed":
+            return "Not downloaded: " + note
+        return note or "Waiting"
+
+    def overall(self):
+        batches = self.ctl.store.batches
+        run = self.ctl.run
+        if run:
+            return "Downloading " + (run.link["title"] or run.link["url"])
+        if not batches:
+            return "Paste links above, then press Add and start"
+        scheduled = [b["start_at"] for b in batches if b["state"] == "scheduled" and b.get("start_at")]
+        if scheduled:
+            return f"Next start {core.describe_time(min(scheduled))}. Kollect opens by itself at that time."
+        if any(b["state"] == "paused" and any(x["status"] == "waiting" for x in b["links"]) for b in batches):
+            return "Paused"
+        return "All done"
+
+    def fill_time_menu(self, button, bid):
+        b = self.ctl.store.batch(bid)
+        if not b:
+            return
+        picker = TimePicker(b.get("start_at"))
+        set_time = Gtk.Button(label="Set start time")
+        set_time.add_css_class("suggested-action")
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, margin_top=6, margin_bottom=6,
+                      margin_start=6, margin_end=6)
+        box.append(picker)
+        box.append(set_time)
+        if b["state"] == "scheduled":
+            clear = Gtk.Button(label="Remove start time")
+            clear.connect("clicked", lambda *_: (button.popdown(), self.ctl.schedule(bid, None)))
+            box.append(clear)
+        set_time.connect("clicked", lambda *_: (button.popdown(), self.ctl.schedule(bid, picker.timestamp())))
+        button.set_popover(Gtk.Popover(child=box))
+
+    def on_play(self, button, bid):
+        b = self.ctl.store.batch(bid)
+        if not b:
+            return
+        run = self.ctl.run
+        waiting = any(x["status"] == "waiting" for x in b["links"])
+        if (run is not None and run.batch is b) or (b["state"] == "active" and waiting):
+            self.ctl.pause(bid)
+        else:
+            self.ctl.play(bid)
+
+    def open_batch(self, bid):
+        b = self.ctl.store.batch(bid)
+        if b:
+            open_folder(b["base"])
+
+    @staticmethod
+    def open_link(link):
+        open_folder(link["folder"])
+
+    # ------------------------------------------------------------ closing
+
+    def on_close(self, *_):
+        if self.closing or not self.ctl.busy:
+            return False
+        dialog = Adw.AlertDialog(heading="Stop downloading and close?",
+                                 body="The batch is paused and stays in the queue. Press Start next time to continue where it stopped.")
+        dialog.add_response("cancel", "Keep downloading")
+        dialog.add_response("close", "Stop and close")
+        dialog.set_response_appearance("close", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", self.on_close_response)
+        dialog.present(self)
+        return True
+
+    def on_close_response(self, _dialog, response):
+        if response == "close":
+            self.ctl.shutdown()
+            self.closing = True
+            self.close()
+
+
+class App(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id=core.APP_ID, flags=Gio.ApplicationFlags.HANDLES_COMMAND_LINE)
+        self.window = None
+        self.ctl = None
+        self.settings = None
+
+    def do_startup(self):
+        Adw.Application.do_startup(self)
+        self.settings = core.Settings()
+        self.ctl = Controller(core.Store().load(), self.settings, self.on_change)
+        quit_action = Gio.SimpleAction.new("quit", None)
+        quit_action.connect("activate", lambda *_: self.window and self.window.close())
+        self.add_action(quit_action)
+        self.set_accels_for_action("app.quit", ["<Control>q"])
+
+    def do_command_line(self, command_line):
+        args = command_line.get_arguments()[1:]
+        if "--version" in args:
+            command_line.print_literal(f"Kollect {__version__}\n")
+            return 0
+        self.do_activate()
+        links = core.find_links(" ".join(a for a in args if not a.startswith("--")))
+        fresh = [u for u in links if u not in self.ctl.store.queued_urls()]
+        if fresh:
+            base = core.expand(self.settings["base"]) or core.expand(core.DEFAULT_BASE)
+            self.ctl.add_batch(fresh, base, bool(self.settings["numbered"]))
+        if "--start-due" in args:
+            self.ctl.start_due()
+        return 0
+
+    def do_activate(self):
+        if not self.window:
+            self.window = Window(self)
+            self.window.connect("destroy", self.on_window_gone)
+        self.window.present()
+
+    def on_window_gone(self, *_):
+        self.window = None
+
+    def on_change(self, batch_id=None, link_id=None):
+        if self.window:
+            self.window.on_change(batch_id, link_id)
+
+
+def main(argv):
+    return App().run(argv)
