@@ -34,7 +34,7 @@ def link(url, status="waiting", title="", note="", **extra):
 
 def batch(base, links, mode="full", numbered=True, state="active", start_at=None):
     return {"id": core.new_id(), "base": os.path.join(HOME_PICTURES, base), "numbered": numbered, "mode": mode,
-            "state": state, "start_at": start_at, "added": time.time(), "links": links}
+            "if_downloaded": "skip", "state": state, "start_at": start_at, "added": time.time(), "links": links}
 
 
 def example_queue():
@@ -78,11 +78,21 @@ class ShotApp(ui.App):
     def do_command_line(self, command_line):
         self.do_activate()
         win = self.window
-        win.set_default_size(820, 860)
+        win.set_default_size(820, 900)
         win.links.get_buffer().set_text("https://www.example.org/galleries/spring-garden/\n"
                                         "https://www.example.org/galleries/spring-garden/page/2/\n"
                                         "https://photos.example.com/albums/night-market.html\n")
         win.on_change()
+        browsers_dialog = ui.BrowsersDialog(win)
+        plan = {"links": ["https://www.example.org/galleries/autumn-walk/",
+                          "https://photos.example.com/albums/city-lights.html",
+                          "https://www.example.net/gallery/2024/harbour/"],
+                "base": os.path.join(HOME_PICTURES, "Kollect Downloads"), "start": "now", "start_at": None,
+                "in_queue": 0}
+        duplicates = [(plan["links"][0], {"folder": TMP, "title": "Autumn walk in the hills", "images": 24,
+                                          "downloaded": "2026-11-02 19:50:31"}),
+                      (plan["links"][1], {"folder": TMP, "title": "City lights at night", "images": 15,
+                                          "downloaded": "2026-11-01 22:10:05"})]
         steps = [(1.5, lambda: shoot(win, "main.png")),
                  (0.3, lambda: win.add_menu.popup()),
                  (1.0, lambda: shoot(win, "add-menu.png", win.add_menu)),
@@ -90,8 +100,11 @@ class ShotApp(ui.App):
                  (0.3, lambda: open_clock(win, 1)),
                  (1.0, lambda: shoot(win, "start-time.png", clock_popover(win, 1))),
                  (0.3, lambda: clock_buttons(win)[1].popdown()),
-                 (0.3, lambda: ui.BrowsersDialog(win).present(win)),
+                 (0.3, lambda: browsers_dialog.present(win)),
                  (1.5, lambda: shoot(win, "add-to-browsers.png")),
+                 (0.3, lambda: browsers_dialog.close()),
+                 (0.5, lambda: win.ask_about_duplicates(dict(plan), duplicates)),
+                 (1.5, lambda: shoot(win, "duplicates.png")),
                  (0.3, self.quit)]
         run_steps(steps)
         return 0

@@ -53,8 +53,13 @@ class Controller:
 
     # ------------------------------------------------------------ commands
 
-    def add_batch(self, links, base, numbered, mode="full", start="now", start_at=None):
-        b = core.new_batch(links, base, numbered, mode)
+    def add_batch(self, links, base, numbered, mode="full", start="now", start_at=None, if_downloaded="skip",
+                  redo=()):
+        """redo: links whose old gallery you chose to overwrite when you added them."""
+        b = core.new_batch(links, base, numbered, mode, if_downloaded)
+        for link in b["links"]:
+            if link["url"] in redo:
+                link["redo"] = True
         if start == "paused":
             b["state"] = "paused"
         elif start == "at":
@@ -169,9 +174,50 @@ class Controller:
             return
         pick = self.store.next_link()
         if pick:
-            self._start(*pick)
+            self._begin(*pick)
         else:
             self.notify()
+
+    def _begin(self, batch, link):
+        """A link's turn: if its gallery is already downloaded, do what was chosen for it, without asking."""
+        base = core.expand(batch["base"]) or core.expand(core.DEFAULT_BASE)
+        existing = core.existing_gallery(base, link["url"])
+        rule = batch.get("if_downloaded", "update")  # batches from before this option added new pictures only
+        if existing and (link.get("redo") or rule == "overwrite"):
+            link["replaced"] = self._move_old(existing["folder"])
+        elif existing and rule == "skip":
+            when = core.describe_date(existing["downloaded"])
+            link.update(status="skipped", folder=existing["folder"], title=link["title"] or existing["title"],
+                        note=f"already downloaded{' on ' + when if when else ''}, "
+                             f"{existing['images']} image{'s' if existing['images'] != 1 else ''}",
+                        finished=time.time())
+            self._log(f"=== skip {link['url']}: already in {existing['folder']}")
+            self._changed()
+            GLib.idle_add(self._next_once)
+            return
+        link.pop("redo", None)  # once replaced, a pause and resume must not replace the new pictures
+        self._start(batch, link)
+
+    def _move_old(self, folder):
+        """Move the old gallery to the Trash (into a dated subfolder where there is no Trash) and forget it."""
+        paths = core.replaced_files(folder)
+        stamp = time.strftime("%Y-%m-%d %H-%M")
+        where = "the Trash"
+        for path in paths:
+            try:
+                Gio.File.new_for_path(path).trash(None)
+            except GLib.Error:
+                keep = os.path.join(folder, f"Replaced {stamp}")
+                try:
+                    os.makedirs(keep, exist_ok=True)
+                    os.replace(path, os.path.join(keep, os.path.basename(path)))
+                    where = f"“Replaced {stamp}”"
+                except OSError as e:
+                    self._log(f"=== could not move {path} out of the way: {e.strerror}")
+        core.forget_downloads(folder)
+        self._log(f"=== replaced {len(paths)} files in {folder}, moved to {where}")
+        pictures = len([p for p in paths if os.path.basename(p) != core.INFO_FILE])
+        return f"the old {pictures} picture{'s' if pictures != 1 else ''} are in {where}" if pictures else ""
 
     def _start(self, batch, link, stage="site", found=None):
         """stage "site": gallery-dl's own extractor. For a site it does not know, "find" (finder.py reads the
@@ -332,6 +378,8 @@ class Controller:
             note += f", {link['new']} new"
         if link["failed"]:
             note += f", {link['failed']} failed"
+        if link.get("replaced"):
+            extra += " · " + link.pop("replaced")
         self._finish(link, "done", note + STAGE_DONE.get(run.stage, "") + extra)
 
     def _finish(self, link, status, note):

@@ -332,6 +332,54 @@ def write_gallery_info(folder, link, meta, files, numbered, stage):
     return info
 
 
+def _read_info(folder):
+    try:
+        with open(os.path.join(folder, INFO_FILE), encoding="utf-8") as f:
+            info = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return info if isinstance(info, dict) else None
+
+
+def _info_pictures(folder, info):
+    names = [f["file"] for f in info.get("files", []) if isinstance(f, dict) and isinstance(f.get("file"), str)]
+    return [n for n in names if os.path.basename(n) == n and os.path.isfile(os.path.join(folder, n))]
+
+
+def existing_gallery(base, link):
+    """The gallery already downloaded for this address under base, or None.
+
+    A gallery counts once Kollect finished it (its gallery-info.json is there) and some of its pictures are still
+    in the folder; a paused or half-done download has no info file yet, so it is not a duplicate."""
+    folder = gallery_folder(base, link)
+    info = _read_info(folder)
+    if info is None:
+        return None
+    pictures = _info_pictures(folder, info)
+    if info.get("files") and not pictures:
+        return None
+    return {"folder": folder, "url": info.get("url") or split_prefix(link)[1], "title": info.get("title") or "",
+            "images": len(pictures) if info.get("files") else info.get("images", 0),
+            "downloaded": info.get("downloaded", "")}
+
+
+def replaced_files(folder):
+    """What an overwrite moves out of the way: the pictures Kollect saved there and its info file."""
+    info = _read_info(folder) or {}
+    paths = [os.path.join(folder, n) for n in _info_pictures(folder, info)]
+    if os.path.isfile(os.path.join(folder, INFO_FILE)):
+        paths.append(os.path.join(folder, INFO_FILE))
+    return paths
+
+
+def forget_downloads(folder):
+    """Drop the download archive (Kollect's own file), so gallery-dl fetches every picture again."""
+    try:
+        os.remove(os.path.join(folder, WORK_DIR, "archive.sqlite3"))
+    except OSError:
+        pass
+
+
 LIBRARY_COLUMNS = ["Downloaded", "Site", "Title", "Name", "Tags", "URL", "Folder", "Images"]
 
 
@@ -367,6 +415,15 @@ def next_time(hour, minute, now=None):
         lt = time.localtime(now + 86400)
         ts = time.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, hour, minute, 0, 0, 0, -1))
     return ts
+
+
+def describe_date(stamp):
+    """'2026-11-02 19:50:31' (as gallery-info.json keeps it) -> '2 Nov 2026, 19:50'."""
+    try:
+        t = time.strptime(stamp, "%Y-%m-%d %H:%M:%S")
+    except (TypeError, ValueError):
+        return stamp or ""
+    return f"{t.tm_mday} {time.strftime('%b %Y, %H:%M', t)}"
 
 
 def describe_time(ts, now=None):
@@ -420,16 +477,20 @@ def new_id():
     return uuid.uuid4().hex[:8]
 
 
-def new_batch(links, base, numbered, mode="full"):
-    """mode "full": full-size pictures only; "all": everything on the page (for sites gallery-dl does not know)."""
-    return {"id": new_id(), "base": base, "numbered": bool(numbered), "mode": mode, "state": "active",
-            "start_at": None, "added": time.time(),
+def new_batch(links, base, numbered, mode="full", if_downloaded="skip"):
+    """mode "full": full-size pictures only; "all": everything on the page (for sites gallery-dl does not know).
+    if_downloaded: what a link does when its turn comes and its gallery is already there (nobody is asked then):
+    "skip", "overwrite" (old pictures to the Trash, download again) or "update" (add pictures that are new on the
+    page; the download archive keeps pictures you deleted from coming back)."""
+    return {"id": new_id(), "base": base, "numbered": bool(numbered), "mode": mode, "if_downloaded": if_downloaded,
+            "state": "active", "start_at": None, "added": time.time(),
             "links": [{"id": new_id(), "url": u, "status": "waiting", "note": "", "title": "", "folder": "",
                        "new": 0, "old": 0, "failed": 0, "generic": split_prefix(u)[0]} for u in links]}
 
 
 class Settings(dict):
-    DEFAULTS = {"base": DEFAULT_BASE, "numbered": False, "mode": "full", "extra_args": [], "gallery_dl": ""}
+    DEFAULTS = {"base": DEFAULT_BASE, "numbered": False, "mode": "full", "warn_duplicates": True,
+                "if_downloaded": "skip", "extra_args": [], "gallery_dl": ""}
 
     def __init__(self, path=None):
         super().__init__(self.DEFAULTS)

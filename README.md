@@ -40,6 +40,9 @@ Created by Kamyar Fatemifar.
     takes the thumbnails, every size the page offers, and the page's own logos and buttons.
 - **Start times.** A batch can wait for a time of day. If Kollect is closed at that time, a
   systemd user timer opens it and the batch starts.
+- **Galleries you already have.** Before downloading a gallery again, Kollect warns you and lets
+  you skip or overwrite them all; for timed and queued runs that nobody watches, a fixed choice
+  applies. See [Galleries already downloaded](#galleries-already-downloaded).
 - **From your browser.** A browser add-on for Chrome, Brave, Chromium, Edge, Vivaldi and Firefox
   sends the addresses of your open tabs, or the links in highlighted text, straight into Kollect's
   links box and copies them to the clipboard. See [Send links from your browser](#send-links-from-your-browser).
@@ -91,6 +94,32 @@ from the list; the downloaded files stay.
 Closing Kollect while it downloads asks first; the batch is then paused and continues from where
 it stopped when you press Start again. When Kollect opens, nothing starts by itself except
 batches whose start time has come.
+
+## Galleries already downloaded
+
+A gallery counts as downloaded once Kollect has finished it in that folder: its `gallery-info.json`
+is there and some of its pictures still are. (Without this check, a second download of the same
+address goes into the same folder and adds only the pictures that are new on the page.)
+
+With **Warn me before downloading a gallery again** ticked, adding links whose galleries are
+already in the chosen folder shows them in a list, with three choices:
+
+- **Skip all**: those links are left out; the other links are added.
+- **Overwrite all**: the old pictures and their info file go to the Trash, and the galleries are
+  downloaded again. Other files you put in the gallery folder are not touched.
+- **Cancel**: nothing is added, and the links stay in the box.
+
+![Kollect warns that two of three galleries are already downloaded](docs/screenshots/duplicates.png)
+
+Nobody is asked when a link's turn comes, so every link checks again just before it starts: a
+batch with a start time, links added from the command line, or a gallery that was downloaded after
+you added the link. The two boxes after **When I'm not asked (timed or queued)** decide what
+happens then, and each batch keeps the choice it was added with:
+
+- **Skip it**: the link is marked *Skipped: already downloaded* (the default).
+- **Download it again**: as Overwrite all.
+- Neither ticked: only pictures that are new on the page since the last download are added.
+  Pictures you deleted yourself do not come back, because the download archive remembers them.
 
 ## Send links from your browser
 
@@ -155,8 +184,8 @@ ends in a picture type such as `.jpg`, `.png` or `.webp`. In those cases try Eve
 
 ## Settings
 
-`~/.config/kollect/settings.json` holds the last folder, Full size/Everything and numbering choices,
-and two keys you can edit while Kollect is closed:
+`~/.config/kollect/settings.json` holds the last folder, Full size/Everything, numbering and duplicate
+choices, and two keys you can edit while Kollect is closed:
 
 - `extra_args`: more gallery-dl options for every download. For sites that need you signed in,
   `["--cookies-from-browser", "firefox"]` uses the cookies of your Firefox profile (see
@@ -179,6 +208,8 @@ full-size picture finder.
 explains how gallery-dl is pointed at it. `tests/browser_drive.mjs` (Chrome family) and
 `tests/firefox_drive.mjs` (Firefox) load the add-on into a browser with a throwaway profile and
 use its panel and right-click action (Node 22 or newer).
+`tests/ui_duplicates.py` ticks the duplicate options in a separate window, since GTK 4's check boxes
+cannot be clicked through the accessibility bus.
 
 The window pictures above come from `python3 tools/screenshots.py docs/screenshots`, which opens a
 separate Kollect window filled with example batches (nothing is downloaded and your own queue is not

@@ -6,6 +6,7 @@
                                    [--mode now|paused|at] [--at HH:MM] LINK...
   python3 tests/atspi_drive.py press NAME [INDEX]          press the INDEX-th (0-based) button called NAME
   python3 tests/atspi_drive.py schedule INDEX HH:MM        give batch INDEX a start time
+  python3 tests/atspi_drive.py check NAME...               say whether checkboxes or switches called NAME are on
 """
 import argparse
 import sys
@@ -95,7 +96,7 @@ def activate(node):
 
 
 def press(name, index=0):
-    found = nodes((Atspi.Role.PUSH_BUTTON, Atspi.Role.TOGGLE_BUTTON, Atspi.Role.BUTTON), name)
+    found = nodes((Atspi.Role.PUSH_BUTTON, Atspi.Role.TOGGLE_BUTTON, Atspi.Role.BUTTON, Atspi.Role.CHECK_BOX), name)
     if not -len(found) <= index < len(found):
         sys.exit(f"button {name!r} #{index} not found ({len(found)} showing)")
     activate(found[index])
@@ -161,6 +162,12 @@ def cmd_press(args):
     press(args.name, args.index)
 
 
+def cmd_check(args):
+    for name in args.names:
+        found = nodes(name=name)
+        print(f"{name}: {'on' if found and is_on(found[0]) else 'off' if found else 'not found'}")
+
+
 def cmd_schedule(args):
     press("Start time", args.index)
     set_time(args.at)
@@ -182,6 +189,8 @@ def main():
     b = sub.add_parser("press")
     b.add_argument("name")
     b.add_argument("index", type=int, nargs="?", default=0)
+    c = sub.add_parser("check")
+    c.add_argument("names", nargs="+")
     s = sub.add_parser("schedule")
     s.add_argument("index", type=int)
     s.add_argument("at")

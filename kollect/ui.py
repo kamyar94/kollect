@@ -1,5 +1,6 @@
 """Kollect window: paste links, pick a folder, add. Each batch has Play/Pause, a start time and its own folder."""
 import os
+import re
 import subprocess
 import time
 
@@ -13,7 +14,9 @@ from . import __version__, browsers, core  # noqa: E402
 from .runner import Controller  # noqa: E402
 
 STATUS_ICONS = {"waiting": "content-loading-symbolic", "done": "object-select-symbolic",
-                "failed": "dialog-warning-symbolic"}
+                "failed": "dialog-warning-symbolic", "skipped": "media-skip-forward-symbolic"}
+RULE_TEXT = {"skip": "skips galleries it has", "overwrite": "replaces galleries it has",
+             "update": "adds new pictures only"}
 
 
 def a11y(widget, label):
@@ -142,6 +145,27 @@ class Window(Adw.ApplicationWindow):
         options_row.append(number_label)
         options_row.append(self.add_button)
 
+        # galleries that are already downloaded: ask when you add links; a fixed rule when nobody is asked
+        rule = self.settings.get("if_downloaded", "skip")
+        self.warn = Gtk.CheckButton(label="Warn me before downloading a gallery again",
+                                    active=bool(self.settings.get("warn_duplicates", True)))
+        self.skip_rule = Gtk.CheckButton(label="Skip it", active=rule == "skip")
+        self.again_rule = Gtk.CheckButton(label="Download it again", active=rule == "overwrite")
+        unattended = Gtk.Label(label="When I'm not asked (timed or queued):", margin_start=8)
+        unattended.add_css_class("dim-label")
+        tip = ("When a link's turn comes and its gallery is already in the folder: in a batch with a start time, "
+               "for links added from the command line, or for a gallery downloaded after you added the link. "
+               "Download it again moves the old pictures to the Trash. Neither ticked: only pictures that are new "
+               "on the page since the last download are added.")
+        for widget in (unattended, self.skip_rule, self.again_rule):
+            widget.set_tooltip_text(tip)
+        self.warn.connect("toggled", lambda *_: self.save_duplicate_choice())
+        self.skip_rule.connect("toggled", self.on_rule_toggled, self.again_rule)
+        self.again_rule.connect("toggled", self.on_rule_toggled, self.skip_rule)
+        duplicates_row = Gtk.Box(spacing=10)
+        for widget in (self.warn, unattended, self.skip_rule, self.again_rule):
+            duplicates_row.append(widget)
+
         self.status = Gtk.Label(xalign=0, wrap=True)
         self.status.add_css_class("heading")
 
@@ -165,7 +189,7 @@ class Window(Adw.ApplicationWindow):
 
         body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12,
                        margin_top=12, margin_bottom=12, margin_start=12, margin_end=12)
-        for w in (links_frame, folder_row, options_row, self.status, list_scroll, bottom):
+        for w in (links_frame, folder_row, options_row, duplicates_row, self.status, list_scroll, bottom):
             body.append(w)
         self.toasts = Adw.ToastOverlay(child=body)
         view = Adw.ToolbarView(content=self.toasts)
@@ -212,22 +236,90 @@ class Window(Adw.ApplicationWindow):
             return
         self.folder.set_text(core.shorten(base))
         self.settings["base"] = core.shorten(base)
-        mode = "all" if self.everything.get_active() else "full"
         self.settings["numbered"] = self.number.get_active()
-        self.settings["mode"] = mode
+        self.settings["mode"] = "all" if self.everything.get_active() else "full"
         self.settings.save()
-        self.ctl.add_batch(fresh, base, self.number.get_active(), mode, start, start_at)
-        buf.set_text("")
-        msg = "Added " + plural(len(fresh), "link")
-        if len(fresh) < len(links):
-            msg += f" ({len(links) - len(fresh)} already in the queue)"
-        if start == "paused":
+        plan = {"links": fresh, "base": base, "start": start, "start_at": start_at,
+                "in_queue": len(links) - len(fresh)}
+        duplicates = [(u, g) for u in fresh if (g := core.existing_gallery(base, u))] if self.warn.get_active() else []
+        if duplicates:
+            self.ask_about_duplicates(plan, duplicates)
+        else:
+            self.finish_add(plan)
+
+    def finish_add(self, plan, redo=(), skipped=0):
+        if plan["links"]:
+            self.ctl.add_batch(plan["links"], plan["base"], self.number.get_active(),
+                               "all" if self.everything.get_active() else "full", plan["start"], plan["start_at"],
+                               self.duplicate_rule(), redo)
+        self.links.get_buffer().set_text("")
+        msg = "Added " + plural(len(plan["links"]), "link")
+        if plan["in_queue"]:
+            msg += f" ({plan['in_queue']} already in the queue)"
+        if skipped:
+            msg += f" · {skipped} already downloaded {'was' if skipped == 1 else 'were'} skipped"
+        if redo:
+            msg += f" · {len(redo)} will be downloaded again"
+        if plan["links"] and plan["start"] == "paused":
             msg += ", paused"
-        elif start == "at":
-            msg += ", starts " + core.describe_time(start_at)
+        elif plan["links"] and plan["start"] == "at":
+            msg += ", starts " + core.describe_time(plan["start_at"])
         if not core.find_gallery_dl(self.settings):
             msg = "gallery-dl is not installed. Run: pipx install gallery-dl"
         self.toast(msg)
+
+    def ask_about_duplicates(self, plan, duplicates):
+        total, found = len(plan["links"]), len(duplicates)
+        heading = (f"{found} of {total} galleries are already downloaded" if total > 1
+                   else "This gallery is already downloaded")
+        others = total - found
+        body = f"They are in {core.shorten(plan['base'])}." if found > 1 else f"It is in {core.shorten(plan['base'])}."
+        if others:
+            body += f" The other {plural(others, 'link')} {'is' if others == 1 else 'are'} added either way."
+        body += "\n\nOverwrite all moves the old pictures to the Trash, then downloads the galleries again."
+        dialog = Adw.AlertDialog(heading=heading, body=body, prefer_wide_layout=True)
+        rows = Gtk.ListBox(selection_mode=Gtk.SelectionMode.NONE)
+        rows.add_css_class("boxed-list")
+        for url, gallery in duplicates:
+            address = re.sub(r"^https?://(www\.)?", "", core.split_prefix(url)[1])
+            details = [address, plural(gallery["images"], "image"), core.describe_date(gallery["downloaded"])]
+            row = Adw.ActionRow(title=gallery["title"] or address, subtitle=" · ".join(d for d in details if d),
+                                use_markup=False, title_lines=1, subtitle_lines=2)
+            row.add_suffix(icon_button("folder-open-symbolic", "Open its folder", open_folder, gallery["folder"]))
+            rows.append(row)
+        dialog.set_extra_child(Gtk.ScrolledWindow(child=rows, propagate_natural_height=True, max_content_height=260,
+                                                  hscrollbar_policy=Gtk.PolicyType.NEVER))
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("overwrite", "Overwrite all")
+        dialog.add_response("skip", "Skip all")
+        dialog.set_response_appearance("overwrite", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_response_appearance("skip", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("skip")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", self.on_duplicates_answer, plan, {u for u, _ in duplicates})
+        dialog.present(self)
+
+    def on_duplicates_answer(self, _dialog, response, plan, duplicate_urls):
+        if response == "skip":
+            plan["links"] = [u for u in plan["links"] if u not in duplicate_urls]
+            self.finish_add(plan, skipped=len(duplicate_urls))
+        elif response == "overwrite":
+            self.finish_add(plan, redo=duplicate_urls)
+        else:
+            self.toast("Nothing added")
+
+    def duplicate_rule(self):
+        return "skip" if self.skip_rule.get_active() else "overwrite" if self.again_rule.get_active() else "update"
+
+    def on_rule_toggled(self, button, other):
+        if button.get_active() and other.get_active():
+            other.set_active(False)  # the two are either-or; both off means add new pictures only
+        self.save_duplicate_choice()
+
+    def save_duplicate_choice(self):
+        self.settings["warn_duplicates"] = self.warn.get_active()
+        self.settings["if_downloaded"] = self.duplicate_rule()
+        self.settings.save()
 
     def on_active(self, *_):
         if self.is_active() and not self.links.get_buffer().get_char_count():
@@ -343,7 +435,10 @@ class Window(Adw.ApplicationWindow):
         done = sum(x["status"] == "done" for x in links)
         failed = sum(x["status"] == "failed" for x in links)
         waiting = sum(x["status"] == "waiting" for x in links)
+        skipped = sum(x["status"] == "skipped" for x in links)
         parts = [plural(len(links), "link")]
+        if skipped:
+            parts.append(f"{skipped} skipped")
         if done:
             parts.append(f"{done} done")
         if failed:
@@ -351,6 +446,7 @@ class Window(Adw.ApplicationWindow):
         parts.append("everything" if b.get("mode", "all") == "all" else "full size")
         if b["numbered"]:
             parts.append("numbered")
+        parts.append(RULE_TEXT[b.get("if_downloaded", "update")])
         if running:
             state = "Downloading"
         elif b["state"] == "scheduled":
@@ -405,6 +501,8 @@ class Window(Adw.ApplicationWindow):
             return "Done: " + note
         if status == "failed":
             return "Not downloaded: " + note
+        if status == "skipped":
+            return "Skipped: " + note
         return note or "Waiting"
 
     def overall(self):
@@ -588,7 +686,9 @@ class App(Adw.Application):
         fresh = [u for u in links if u not in self.ctl.store.queued_urls()]
         if fresh:
             base = core.expand(self.settings["base"]) or core.expand(core.DEFAULT_BASE)
-            self.ctl.add_batch(fresh, base, bool(self.settings["numbered"]), self.settings.get("mode", "full"))
+            # nobody is asked here: galleries already downloaded follow the "When I'm not asked" choice
+            self.ctl.add_batch(fresh, base, bool(self.settings["numbered"]), self.settings.get("mode", "full"),
+                               if_downloaded=self.settings.get("if_downloaded", "skip"))
         if "--start-due" in args:
             self.ctl.start_due()
         return 0

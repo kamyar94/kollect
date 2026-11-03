@@ -262,5 +262,53 @@ class BrowserBridge(unittest.TestCase):
                     os.environ["XDG_DATA_HOME"] = old
 
 
+class Duplicates(unittest.TestCase):
+    URL = "https://www.site.example/g/autumn/"
+
+    def make_gallery(self, base, pictures=("001.png", "002.png")):
+        folder = core.gallery_folder(base, self.URL)
+        os.makedirs(os.path.join(folder, core.WORK_DIR))
+        for name in pictures:
+            open(os.path.join(folder, name), "w").close()
+        open(os.path.join(folder, core.WORK_DIR, "archive.sqlite3"), "w").close()
+        files = [{"n": i, "file": n, "original": n} for i, n in enumerate(pictures, 1)]
+        core.write_gallery_info(folder, self.URL, {"title": "Autumn"}, files, True, "site")
+        return folder
+
+    def test_finished_gallery_is_found(self):
+        with tempfile.TemporaryDirectory() as base:
+            self.assertIsNone(core.existing_gallery(base, self.URL))
+            folder = self.make_gallery(base)
+            found = core.existing_gallery(base, "https://site.example/g/autumn/")  # same folder, without www
+            self.assertEqual((found["folder"], found["title"], found["images"]), (folder, "Autumn", 2))
+
+    def test_half_done_or_emptied_gallery_is_not_a_duplicate(self):
+        with tempfile.TemporaryDirectory() as base:
+            folder = core.gallery_folder(base, self.URL)
+            os.makedirs(folder)
+            open(os.path.join(folder, "001.png"), "w").close()  # paused download: no info file yet
+            self.assertIsNone(core.existing_gallery(base, self.URL))
+        with tempfile.TemporaryDirectory() as base:
+            folder = self.make_gallery(base)
+            for name in ("001.png", "002.png"):
+                os.remove(os.path.join(folder, name))  # pictures deleted, info file left
+            self.assertIsNone(core.existing_gallery(base, self.URL))
+
+    def test_overwrite_moves_only_kollect_files(self):
+        with tempfile.TemporaryDirectory() as base:
+            folder = self.make_gallery(base)
+            open(os.path.join(folder, "my notes.txt"), "w").close()
+            names = sorted(os.path.basename(p) for p in core.replaced_files(folder))
+            self.assertEqual(names, ["001.png", "002.png", core.INFO_FILE])
+            core.forget_downloads(folder)
+            self.assertFalse(os.path.exists(os.path.join(folder, core.WORK_DIR, "archive.sqlite3")))
+
+    def test_batch_rule_and_dates(self):
+        b = core.new_batch([self.URL], "/tmp", False, "full", "overwrite")
+        self.assertEqual(b["if_downloaded"], "overwrite")
+        self.assertEqual(core.describe_date("2026-11-02 19:50:31"), "2 Nov 2026, 19:50")
+        self.assertEqual(core.describe_date(""), "")
+
+
 if __name__ == "__main__":
     unittest.main()
